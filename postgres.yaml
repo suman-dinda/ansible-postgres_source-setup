@@ -1,0 +1,123 @@
+---
+- hosts: localhost
+  become: yes
+
+  vars_files:
+    - /home/dindasuman213/vars.yaml
+
+  pre_tasks:
+    - name: Ansible copy file to remote server
+      copy:
+        src: /home/dindasuman213/postgresql-13.0.tar.gz
+        dest: /usr/postgresql-13.0.tar.gz
+    
+    - name: Extract postgresql-13.0.tgz into /usr/share
+      ansible.builtin.unarchive:
+         src: /usr/postgresql-13.0.tar.gz
+         dest: /usr/share
+    - name: Install OS Dev Tools
+      yum:
+        name: gcc,make,readline-devel,zlib-devel
+        state: present
+        update_cache: True
+
+  tasks:
+    
+    - name: Check libaries
+      shell: sh configure --prefix=/opt/postgresql-13.0
+      args:
+        chdir: /usr/share/postgresql-13.0
+    - name: Install database.
+      shell: make && make install
+      args:
+        chdir: /usr/share/postgresql-13.0
+
+    - name: Add a group called postgres
+      group:
+        name: postgres
+        state: present
+
+    - name: Add a user postgres and add them to a group postgres
+      user:
+        name: postgres
+        password: "{{ vaulted_password | password_hash('sha512') }}"
+        groups: postgres
+        append: yes
+    - name: ansible create data directory
+      file:
+        path: /opt/pgdatabase/data
+        state: directory
+        mode: 0755
+        group: postgres
+        owner: postgres
+
+    - name: Adding the path in the bashrc files
+      lineinfile: 
+         dest=/home/postgres/.bashrc 
+         line='PATH=$PATH:{{ psql_path }}/bin'
+         insertafter='EOF'  
+         state=present
+      become: yes
+      become_user: postgres
+
+    - name: Source the bashrc file
+      shell: source /home/postgres/.bashrc;cat /home/postgres/.bashrc
+      become: yes
+      become_user: postgres
+    
+    - find: paths=/opt/pgdatabase/data file_type=directory patterns="*.conf"
+      register: postgresdata_files
+     
+    - name: Initialize DB
+      shell: 'echo "{{ vaulted_password }}" > /home/postgres/superuser;echo "{{ ansible_env.PATH }}";initdb -D /opt/pgdatabase/data/ -U postgres  --pwfile=/home/postgres/superuser'
+      args:
+        executable: /bin/bash
+      become: yes
+      become_user: postgres
+      environment: 
+          PATH: "{{ ansible_env.PATH }}:{{ psql_path }}/bin"
+    
+    - name: "Ansible Create log directory"
+      file:
+        path: /opt/pglog
+        state: directory
+        mode: 0755
+        group: postgres
+        owner: postgres
+        
+    #  STtarding DB is shifted to the next task for systemd execution
+    # - name: Start DB
+    #   shell: 'pg_ctl -D /opt/pgdatabase/data/ -l /opt/pglog/start.log start'
+    #   args:
+    #     executable: /bin/bash
+    #   become: yes
+    #   become_user: postgres
+    #   environment: 
+    #       PATH: "$PATH:/opt/postgresql-13.0/bin"
+ 
+    - name: Creating service file for postgres sytemd
+      copy:
+        dest: "/etc/systemd/system/postgresql.service"
+        state: present
+        mode: u=rwx,g=rx,o=rx
+        content: |
+          [Unit]
+          Description=PostgreSQL database server
+          Documentation=man:postgres(1)
+
+          [Service]
+          Type=notify
+          User=postgres
+          ExecStart=/opt/postgresql-13.0/bin/pg_ctl -D /opt/pgdatabase/data/ -l /opt/pglog/start.log start
+          ExecReload=/bin/kill -HUP $MAINPID
+          KillMode=mixed
+          KillSignal=SIGINT
+          TimeoutSec=0
+
+          [Install]
+          WantedBy=multi-user.target
+         
+ 
+  handlers:
+    - name: restart postgres
+      service: name=postgresql state=restarted

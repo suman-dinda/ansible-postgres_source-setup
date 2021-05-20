@@ -1,0 +1,3 @@
+---
+psql_path: /opt/postgresql-13.0
+vaulted_password: password1
